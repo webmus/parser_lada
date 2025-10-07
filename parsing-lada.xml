@@ -5804,10 +5804,6 @@ foreach ($cards as $card) {
         )->item(0);
 
         if (!$linkNode) {
-                $linkNode = $xpath->query(".//a[contains(@href, '/aktau_news/') and not(contains(@href, '#'))]", $card)->item(0);
-        }
-
-        if (!$linkNode) {
                 continue;
         }
 
@@ -5875,7 +5871,7 @@ foreach ($cards as $card) {
         }
 }
 
-$links = $xpath->query("//a[contains(@href, '/aktau_news/') and not(contains(@href, '#'))]");
+$links = $xpath->query("//a[contains(concat(' ', normalize-space(@class), ' '), ' news__link ')][contains(@href, '/aktau_news/') and not(contains(@href, '#'))]");
 
 foreach ($links as $linkNode) {
         $href = trim($linkNode->getAttribute('href'));
