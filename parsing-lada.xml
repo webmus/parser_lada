@@ -6222,6 +6222,54 @@ libxml_use_internal_errors($previousState);
 
 $xpath = new DOMXPath($dom);
 
+$resolveImageSource = static function ($node) use ($baseUrl) {
+        if (!$node instanceof DOMElement) {
+                return '';
+        }
+
+        $attributes = [
+                'src',
+                'data-src',
+                'data-original',
+                'data-lazy',
+                'srcset',
+                'data-srcset'
+        ];
+
+        foreach ($attributes as $attribute) {
+                if (!$node->hasAttribute($attribute)) {
+                        continue;
+                }
+
+                $value = trim($node->getAttribute($attribute));
+
+                if ($value === '') {
+                        continue;
+                }
+
+                if ($attribute === 'srcset' || $attribute === 'data-srcset') {
+                        $parts = preg_split('/\s*,\s*/u', $value);
+                        $value = $parts[0] ?? '';
+
+                        if ($value !== '') {
+                                $value = trim(preg_split('/\s+/u', $value)[0]);
+                        }
+                }
+
+                if ($value === '') {
+                        continue;
+                }
+
+                $normalized = lada_normalize_url($value, $baseUrl);
+
+                if ($normalized !== '') {
+                        return $normalized;
+                }
+        }
+
+        return '';
+};
+
 $selectors = [
         "//div[contains(@class,'news__content')]",
         "//div[contains(@class,'news-detail__content')]",
@@ -6237,6 +6285,7 @@ $selectors = [
 ];
 
 $contentNode = null;
+$posterFromArticle = '';
 
 foreach ($selectors as $selector) {
         $candidate = $xpath->query($selector)->item(0);
@@ -6319,6 +6368,28 @@ if ($extractNode) {
         }
 }
 
+$posterSelectors = [
+        "//div[contains(@class,'mainpic')]//img",
+        "//div[contains(@class,'news__image')]//img",
+        "//figure[contains(@class,'news__image')]//img",
+        "//div[contains(@class,'news-detail__img')]//img"
+];
+
+foreach ($posterSelectors as $posterSelector) {
+        $posterCandidateNode = $xpath->query($posterSelector)->item(0);
+
+        if (!$posterCandidateNode) {
+                continue;
+        }
+
+        $normalizedPoster = $resolveImageSource($posterCandidateNode);
+
+        if ($normalizedPoster !== '') {
+                $posterFromArticle = $normalizedPoster;
+                break;
+        }
+}
+
 $removeSelectors = [
         ".//script",
         ".//style",
@@ -6379,21 +6450,7 @@ for ($index = $imageNodes->length - 1; $index >= 0; $index--) {
                 continue;
         }
 
-        $src = $img->getAttribute('src');
-
-        if ($src === '') {
-                $src = $img->getAttribute('data-src');
-        }
-
-        if ($src === '') {
-                $src = $img->getAttribute('data-original');
-        }
-
-        if ($src === '') {
-                $src = $img->getAttribute('data-lazy');
-        }
-
-        $normalized = lada_normalize_url($src, $baseUrl);
+        $normalized = $resolveImageSource($img);
 
         if ($normalized === '') {
                 if ($img->parentNode) {
@@ -6412,6 +6469,10 @@ for ($index = $imageNodes->length - 1; $index >= 0; $index--) {
 }
 
 $images = array_values(array_unique($images));
+
+if ($posterFromArticle !== '' && !in_array($posterFromArticle, $images, true)) {
+        array_unshift($images, $posterFromArticle);
+}
 
 $captionText = '';
 $captionSelectors = [
@@ -6469,6 +6530,10 @@ $text = trim($dom->saveHTML($contentNode));
 
 if ($text === '') {
         return;
+}
+
+if ($posterFromArticle !== '') {
+        $poster = $posterFromArticle;
 }
 
 if ($poster) {
