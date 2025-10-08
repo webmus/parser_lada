@@ -4250,6 +4250,7 @@ if ($action == "") die();
 if ($action == "list") {
 
     addLog('Сбор ссылок');
+    logStage('LIST_START');
 
     // ? Блокировка запуска
     $lockFile = ENGINE_DIR . "/data/parse_list.lock";
@@ -4293,6 +4294,11 @@ if ($action == "list") {
             if (!$url) continue;
 
             addLog('Выбран источник - ' . $url);
+            logStage('LIST_MODULE_START', [
+                'source' => $settings['source'],
+                'url' => $url,
+                'settings' => $file
+            ]);
 
             $module_time_start = microtime(true);
             $count = 0;
@@ -4334,8 +4340,18 @@ if ($action == "list") {
                         $error = 'Неизвестный модуль';
                         break;
                 }
+                logStage('LIST_MODULE_DONE', [
+                    'source' => $settings['source'],
+                    'url' => $url,
+                    'found' => $count
+                ]);
             } catch (Exception $e) {
                 $error = $e->getMessage();
+                logStage('LIST_MODULE_ERROR', [
+                    'source' => $settings['source'],
+                    'url' => $url,
+                    'error' => $error
+                ]);
             }
 
             $module_time = round(microtime(true) - $module_time_start, 2);
@@ -4359,6 +4375,7 @@ if ($action == "list") {
     $endTime = microtime(true);
     $duration = round($endTime - $startTime, 2);
     file_put_contents(ROOT_DIR . "/../log.txt", date('Y-m-d H:i:s') . " завершение: {$config['http_home_url']} parse list за {$duration} сек\n", FILE_APPEND);
+    logStage('LIST_END', ['duration' => $duration]);
 
     echo "<h2>Результаты сбора ссылок:</h2>";
     echo "<table border='1' cellpadding='4' cellspacing='0'>";
@@ -4390,6 +4407,7 @@ if ($action == "list") {
 	{
       
         file_put_contents(ROOT_DIR . "/../log.txt", date('Y-m-d H:i:s') . " старт: ".$config['http_home_url']." parse news\n", FILE_APPEND);
+        logStage('NEWS_START');
       
 		if (file_exists(ENGINE_DIR . "/data/list.dat"))
 		{
@@ -4406,15 +4424,20 @@ if ($action == "list") {
 				$json = file_get_contents(ENGINE_DIR . "/parser/" . $item['settings_file']);
 				$settings = json_decode($json, true);
 
-				if ($item['status'] === 'Новый' && $i < $post_count) {
-					
-					// parse post
+                                if ($item['status'] === 'Новый' && $i < $post_count) {
+                                        logStage('NEWS_ITEM_START', [
+                                                'source' => $item['source'],
+                                                'link' => $item['post_link'],
+                                                'settings' => $item['settings_file']
+                                        ]);
 
-					if ($item['source'] == "kyzylorda_news")
-					{
-						$i++;
-						include (DLEPlugins::Check(ENGINE_DIR . '/modules/parse_kyzylorda_news.php'));
-					}
+                                        // parse post
+
+                                        if ($item['source'] == "kyzylorda_news")
+                                        {
+                                                $i++;
+                                                include (DLEPlugins::Check(ENGINE_DIR . '/modules/parse_kyzylorda_news.php'));
+                                        }
 					if ($item['source'] == "mgorod")
 					{
 						$i++;
@@ -4456,26 +4479,32 @@ if ($action == "list") {
 						$i++;
 						include (DLEPlugins::Check(ENGINE_DIR . '/modules/mybuh_news.php'));
 					}			
-					if ($item['source'] == "mybuh_alluseful")
-					{
-						$i++;
-						include (DLEPlugins::Check(ENGINE_DIR . '/modules/mybuh_alluseful.php'));
-					}	                  
-					// update record
+                                        if ($item['source'] == "mybuh_alluseful")
+                                        {
+                                                $i++;
+                                                include (DLEPlugins::Check(ENGINE_DIR . '/modules/mybuh_alluseful.php'));
+                                        }
+                                        // update record
 
-					$item['status'] = "Спарсено";
-					
-				}
+                                        $item['status'] = "Спарсено";
+                                        logStage('NEWS_ITEM_DONE', [
+                                                'source' => $item['source'],
+                                                'link' => $item['post_link']
+                                        ]);
+
+                                }
 
 				$updatedLines[] = json_encode($item, JSON_UNESCAPED_UNICODE);
 				
 				if ($i > $post_count) continue;
 			}
 			file_put_contents(ENGINE_DIR . "/data/list.dat", implode(PHP_EOL, $updatedLines) . PHP_EOL);
-		}
-	}
+                }
+        }
 
-	die();
+        logStage('NEWS_END');
+
+        die();
 
 	addLog('Запуск парсера');
 	$parse = new ParseFilter();
@@ -4565,19 +4594,44 @@ if ($action == "list") {
 		}
 
 
-	function addLog($txt)
-	{
-		$dir = ROOT_DIR . '/logs';
-		if (!is_dir($dir)) {
-			mkdir($dir, 0777, true);
-		}
-		$date = date('d-m-Y');
-		$filename = $dir . "/log_{$date}.log";
-		$time = date('[H:i:s]');
-		$logEntry = $time . ' ' . $txt . PHP_EOL;
+        function addLog($txt)
+        {
+                $dir = ROOT_DIR . '/logs';
+                if (!is_dir($dir)) {
+                        mkdir($dir, 0777, true);
+                }
+                $date = date('d-m-Y');
+                $filename = $dir . "/log_{$date}.log";
+                $time = date('[H:i:s]');
+                $logEntry = $time . ' ' . $txt . PHP_EOL;
 
-		file_put_contents($filename, $logEntry, FILE_APPEND | LOCK_EX);
-	}
+                file_put_contents($filename, $logEntry, FILE_APPEND | LOCK_EX);
+        }
+
+        function logStage($stage, array $context = [])
+        {
+                $message = '[STAGE:' . $stage . ']';
+
+                if (!empty($context)) {
+                        $parts = [];
+
+                        foreach ($context as $key => $value) {
+                                if (is_bool($value)) {
+                                        $value = $value ? 'true' : 'false';
+                                } elseif (is_scalar($value) || $value === null) {
+                                        $value = (string) $value;
+                                } else {
+                                        $value = json_encode($value, JSON_UNESCAPED_UNICODE);
+                                }
+
+                                $parts[] = $key . '=' . $value;
+                        }
+
+                        $message .= ' ' . implode(', ', $parts);
+                }
+
+                addLog($message);
+        }
 
         function doGPT($promt)
         {
@@ -4753,13 +4807,25 @@ if ($action == "list") {
 	}
 
 	
-	function addPost($short_story, $source, $time, $title, $text, $picture_preview, $picture_main, $url, $images, $category, $add_source = true)
-	{
-		global $db, $parse, $config, $category_news, $settings;
+        function addPost($short_story, $source, $time, $title, $text, $picture_preview, $picture_main, $url, $images, $category, $add_source = true)
+        {
+                global $db, $parse, $config, $category_news, $settings;
 
-		if ($text == "") return false;
+                if ($text == "") return false;
 
-		addLog("Добавление поста: ".$title);
+                addLog("Добавление поста: ".$title);
+                $logTitle = trim(preg_replace('/\s+/u', ' ', strip_tags($title)));
+                if (function_exists('mb_substr')) {
+                        $logTitle = mb_substr($logTitle, 0, 120);
+                } else {
+                        $logTitle = substr($logTitle, 0, 120);
+                }
+                logStage('ADD_CALL', [
+                        'title' => $logTitle,
+                        'link' => $url,
+                        'category' => $category_news,
+                        'source' => $source
+                ]);
 	
 	
 		$overall_settings = file_get_contents(ENGINE_DIR . "/data/news_parser.dat");
@@ -4979,30 +5045,44 @@ if ($action == "list") {
 							url ='$url'
 						";
 
-		if ($title != "" && trim($text) != "")
-		{	
-			$db->query($sql);
-			$id = $db->insert_id();
+                logStage('ADD_BEFORE_INSERT', [
+                        'title' => $title,
+                        'alt_name' => $alt_name,
+                        'url' => $url
+                ]);
+
+                if ($title != "" && trim($text) != "")
+                {
+                        $db->query($sql);
+                        $id = $db->insert_id();
 
 			$db->query( "INSERT INTO " . PREFIX . "_post_extras (news_id, allow_rate, votes, disable_index, access, user_id, disable_search, need_pass) VALUES('{$id}', '1', '0', '0', '0', '1', '0', '0')" );
 			$db->query( "INSERT INTO " . PREFIX . "_post_extras_cats (news_id, cat_id) VALUES('{$id}', '$category_news')" );
 			
 			$row = $db->super_query("SELECT * FROM ".PREFIX."_post where ID=".$id);
 			
-			addLog("Пост добавлен: ".$id);
-			
-			$c_url = get_url(  $row['category'] );
+                        logStage('ADD_SUCCESS', [
+                                'id' => $id,
+                                'alt_name' => $alt_name
+                        ]);
+
+                        $c_url = get_url(  $row['category'] );
 
 
-						$res = $db->query("select * from ".PREFIX."_post where id=".$id);
-						while ( $row = $db->get_row($res) ) {
+                                                $res = $db->query("select * from ".PREFIX."_post where id=".$id);
+                                                while ( $row = $db->get_row($res) ) {
 
-									$i++;
-							
-									$xfields = xfieldsload();
-									$xfieldsdata = xfieldsdataload( $row['xfields'] );
-									
-									$prompts_db = getPromptsFromDB();
+                                                                        $i++;
+
+                                                                        $xfields = xfieldsload();
+                                                                        $xfieldsdata = xfieldsdataload( $row['xfields'] );
+
+                                                                        $prompts_db = getPromptsFromDB();
+
+                                                                        logStage('REWRITE_START', [
+                                                                                'id' => $row['id'],
+                                                                                'source' => $source
+                                                                        ]);
 									
 										if ($settings['full_enabled'] == 1)
 										{
@@ -5117,35 +5197,47 @@ if ($action == "list") {
 									$descr = $db->safesql($descr);                          
                           
 		
-									$db->query("update ".PREFIX."_post set
-														title = '$title',
-														alt_name = '$alt_name',
-														short_story = '$short_story',
-														full_story = '$full_story',
-														xfields = '$xfields_str',
-														metatitle = '$metatitle',
-														descr = '$descr',
-														rewrite_done = 1,
-														rewrite_date = $c_date
-													WHERE id=".$row['id']);
-						
-									//if ($i >= $post_count) die();
+                                                                        $db->query("update ".PREFIX."_post set
+                                                                                                                title = '$title',
+                                                                                                                alt_name = '$alt_name',
+                                                                                                                short_story = '$short_story',
+                                                                                                                full_story = '$full_story',
+                                                                                                                xfields = '$xfields_str',
+                                                                                                                metatitle = '$metatitle',
+                                                                                                                descr = '$descr',
+                                                                                                                rewrite_done = 1,
+                                                                                                                rewrite_date = $c_date
+                                                                                                        WHERE id=".$row['id']);
 
-                          		include(DLEPlugins::Check(ENGINE_DIR . '/modules/post_send.php'));
-									
-						}						
-						//
+                                                                        logStage('REWRITE_DONE', [
+                                                                                'id' => $row['id']
+                                                                        ]);
+
+                                                                        //if ($i >= $post_count) die();
+
+                                        include(DLEPlugins::Check(ENGINE_DIR . '/modules/post_send.php'));
+
+                                                                        logStage('POST_SEND', [
+                                                                                'id' => $row['id']
+                                                                        ]);
+
+                                                }
+                                                //
 
 
-		
-			return true;
-		}
-		else
-		{
-			return false;
-		}		
-		
-	}
+
+                        return true;
+                }
+                else
+                {
+                        logStage('ADD_SKIPPED', [
+                                'reason' => 'EMPTY_TITLE_OR_TEXT',
+                                'url' => $url
+                        ]);
+                        return false;
+                }
+
+        }
 	die("done");
 ?>]]></replacecode>
 			<enabled>1</enabled>
