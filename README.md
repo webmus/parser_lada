@@ -42,6 +42,12 @@ Fatal error: Uncaught Error: Call to undefined function lada_import_html_fragmen
 
 По времени появления записей легко понять, на каком этапе процесс остановился или завершился с ошибкой.
 
+## Ошибка MySQL 1100 «Table 'dle_storage' was not locked with LOCK TABLES»
+
+Если при публикации появляется ошибка блокировки таблиц, проверьте наличие дубликатов URL в `{prefix}_post`. Пока их не удалить,
+функция `ensurePostUrlHashConstraint()` включает явную блокировку `LOCK TABLES`, и параллельный запрос к `dle_storage` падает с
+ошибкой 1100. Пошаговая инструкция по очистке дублей и созданию уникального индекса описана в `analysis/mysql-lock-error.md`.
+
 ## План интеграции источника azh.kz
 
 1. **Сбор ссылок (`engine/modules/parse_azh_list.php`)**
