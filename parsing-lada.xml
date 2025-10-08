@@ -5440,6 +5440,30 @@ $resolveImageSource = static function (DOMElement $img) use ($baseUrl) {
         return '';
 };
 
+$findRemovableContainer = static function (DOMElement $node, DOMElement $bodyNode) {
+        for ($current = $node; $current && $current !== $bodyNode; $current = $current->parentNode) {
+                if (!($current instanceof DOMElement)) {
+                        continue;
+                }
+
+                $tag = strtolower($current->tagName);
+
+                if (in_array($tag, ['figure', 'picture'], true)) {
+                        return $current;
+                }
+
+                if ($current->hasAttribute('class')) {
+                        $class = $current->getAttribute('class');
+
+                        if (preg_match('/((?:main|detail|news|article)[-_]?image|photo|poster|media)/i', $class)) {
+                                return $current;
+                        }
+                }
+        }
+
+        return $node;
+};
+
 $previousState = libxml_use_internal_errors(true);
 $dom = new DOMDocument('1.0', 'UTF-8');
 $dom->loadHTML('<?xml encoding="utf-8"?>' . $content);
@@ -5484,6 +5508,38 @@ foreach ($xpath->query('.//comment()', $bodyNode) as $node) {
         }
 }
 
+$dateNodes = $xpath->query(".//small[contains(@class,'text-muted')]");
+
+for ($index = $dateNodes->length - 1; $index >= 0; $index--) {
+        $small = $dateNodes->item($index);
+
+        if (!$small instanceof DOMElement) {
+                continue;
+        }
+
+        $value = $normalizeText($small->textContent);
+
+        if ($value === '') {
+                continue;
+        }
+
+        if (!preg_match('/(Сегодня|Вчера|\d{1,2}\.\d{1,2}\.\d{4}|\d{1,2}:\d{2})/u', $value)) {
+                continue;
+        }
+
+        $parent = $small->parentNode instanceof DOMElement ? $small->parentNode : null;
+
+        if ($small->parentNode) {
+                $small->parentNode->removeChild($small);
+        }
+
+        if ($parent && $parent !== $bodyNode && !$parent->hasChildNodes()) {
+                if ($parent->parentNode) {
+                        $parent->parentNode->removeChild($parent);
+                }
+        }
+}
+
 $anchorNodes = $xpath->query('.//a', $bodyNode);
 
 for ($index = $anchorNodes->length - 1; $index >= 0; $index--) {
@@ -5503,15 +5559,20 @@ for ($index = $anchorNodes->length - 1; $index >= 0; $index--) {
 }
 
 $posterFromArticle = '';
-$imageNodes = $xpath->query('.//img', $bodyNode);
 $images = [];
 
-for ($index = 0; $index < $imageNodes->length; $index++) {
-        $img = $imageNodes->item($index);
+$imageNodesList = $xpath->query('.//img', $bodyNode);
+$imageNodes = [];
 
-        if (!$img instanceof DOMElement) {
-                continue;
+for ($index = 0; $index < $imageNodesList->length; $index++) {
+        $node = $imageNodesList->item($index);
+
+        if ($node instanceof DOMElement) {
+                $imageNodes[] = $node;
         }
+}
+
+foreach ($imageNodes as $img) {
 
         $normalized = $resolveImageSource($img);
 
@@ -5523,11 +5584,25 @@ for ($index = 0; $index < $imageNodes->length; $index++) {
                 continue;
         }
 
+        $isPosterCandidate = false;
+
         if ($posterFromArticle === '') {
                 $posterFromArticle = $normalized;
+                $isPosterCandidate = true;
         }
 
         $images[] = $normalized;
+
+        if ($isPosterCandidate) {
+                $removable = $findRemovableContainer($img, $bodyNode);
+
+                if ($removable->parentNode) {
+                        $removable->parentNode->removeChild($removable);
+                }
+
+                continue;
+        }
+
         $img->setAttribute('src', $normalized);
         $img->removeAttribute('data-src');
         $img->removeAttribute('data-original');
