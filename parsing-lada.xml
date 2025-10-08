@@ -4579,50 +4579,116 @@ if ($action == "list") {
 		file_put_contents($filename, $logEntry, FILE_APPEND | LOCK_EX);
 	}
 
-	function doGPT($promt)
-	{
-		global $db, $settings;
-			
-			$apiKey = $settings['gpt_key'];
-			$temperature = (float)$settings['gpt_temperature'];
-			
-			
-			if ($temperature == "")$temperature = 0;
-			
-			$url = 'https://api.openai.com/v1/chat/completions';
+        function doGPT($promt)
+        {
+                global $settings;
 
-			$data = [
-				"model" => $settings['gpt_model'],
-				"messages" => [
-					[
-						"role" => "user",
-						"content" => $promt.". Верни json, с полем 'content'"
-					]
-				],
-				"response_format" => [
-					"type" => "json_object"
-				],
-				"temperature" => $temperature
-			];
+                $apiKey = trim($settings['gpt_key']);
+                $model = trim($settings['gpt_model']);
+                $temperature = $settings['gpt_temperature'];
 
-			$headers = [
-				'Content-Type: application/json',
-				'Authorization: Bearer ' . $apiKey
-			];
+                if ($apiKey === '') {
+                        addLog('Ошибка GPT: не указан API-ключ');
+                        return '';
+                }
 
-			$ch = curl_init($url);
-			curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
-			curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-			curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                if ($model === '') {
+                        $model = 'gpt-4o-mini';
+                }
 
-			$response = curl_exec($ch);
-			addLog("Ответ от GPT: ".$response);
-			$result = json_decode($response, true);
-			$json = json_decode($result['choices'][0]['message']['content'], true);
-			
-			curl_close($ch);
-			return $json['content'];
-	}
+                if (!is_numeric($temperature)) {
+                        $temperature = 0;
+                }
+
+                $temperature = (float)$temperature;
+
+                $basePayload = [
+                        "model" => $model,
+                        "messages" => [
+                                [
+                                        "role" => "user",
+                                        "content" => $promt . ". Верни json, с полем 'content'"
+                                ]
+                        ],
+                        "temperature" => $temperature
+                ];
+
+                $headers = [
+                        'Content-Type: application/json',
+                        'Authorization: Bearer ' . $apiKey
+                ];
+
+                $attemptUseResponseFormat = true;
+
+                for ($attempt = 0; $attempt < 2; $attempt++) {
+                        $payload = $basePayload;
+
+                        if ($attemptUseResponseFormat) {
+                                $payload['response_format'] = [
+                                        'type' => 'json_object'
+                                ];
+                        }
+
+                        $ch = curl_init('https://api.openai.com/v1/chat/completions');
+                        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload, JSON_UNESCAPED_UNICODE));
+                        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+                        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+
+                        $response = curl_exec($ch);
+                        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                        $curlError = curl_error($ch);
+                        curl_close($ch);
+
+                        if ($response === false) {
+                                addLog('Ошибка GPT (cURL): ' . $curlError);
+                                return '';
+                        }
+
+                        addLog('Ответ от GPT: ' . $response);
+
+                        $decoded = json_decode($response, true);
+
+                        if (!is_array($decoded)) {
+                                addLog('Ошибка GPT: невозможно декодировать ответ');
+                                return '';
+                        }
+
+                        if ($httpCode >= 400 || isset($decoded['error'])) {
+                                $message = $decoded['error']['message'] ?? ('HTTP ' . $httpCode);
+                                addLog('Ошибка GPT: ' . $message);
+
+                                if ($attemptUseResponseFormat && stripos($message, 'response_format') !== false) {
+                                        $attemptUseResponseFormat = false;
+                                        continue;
+                                }
+
+                                return '';
+                        }
+
+                        $content = $decoded['choices'][0]['message']['content'] ?? '';
+
+                        if ($content === '') {
+                                addLog('Ошибка GPT: ответ без поля content');
+                                return '';
+                        }
+
+                        $json = json_decode($content, true);
+
+                        if (json_last_error() === JSON_ERROR_NONE && isset($json['content'])) {
+                                return $json['content'];
+                        }
+
+                        if (json_last_error() !== JSON_ERROR_NONE) {
+                                addLog('Ошибка GPT: некорректный JSON — ' . json_last_error_msg());
+                        } else {
+                                addLog('Ошибка GPT: отсутствует поле content в ответе');
+                        }
+
+                        return is_string($content) ? trim($content) : '';
+                }
+
+                return '';
+        }
 	function doReplaceFields($text, $xfields, $xfieldsdata)
 	{
 		foreach($xfields as $key)
