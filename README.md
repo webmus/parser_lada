@@ -28,3 +28,17 @@ Fatal error: Uncaught Error: Call to undefined function lada_import_html_fragmen
 
 Эта информация позволит определить, какой файл обязан объявлять `lada_import_html_fragment()` и
 почему он не подключается в текущей конфигурации.
+
+## Диагностика этапов парсинга
+
+Плагин формирует журналы в каталоге `logs/` и теперь, помимо обычных записей, оставляет пометки вида
+`[STAGE:...]` для ключевых шагов:
+
+* `LIST_*` — сбор ссылок (`LIST_START`, `LIST_MODULE_START`, `LIST_MODULE_DONE`, `LIST_END`).
+* `NEWS_*` — загрузка и подготовка статей из очереди (`NEWS_START`, `NEWS_ITEM_START`, `NEWS_ITEM_DONE`, `NEWS_END`).
+* `ADD_*` — добавление новости в базу (`ADD_CALL`, `ADD_BEFORE_INSERT`, `ADD_SUCCESS`, `ADD_SKIPPED`).
+* `REWRITE_*` — работа с GPT и обновление материала (`REWRITE_START`, `REWRITE_DONE`).
+* `POST_SEND` — автоматическая отправка после публикации.
+
+По времени появления записей легко понять, на каком этапе процесс остановился или завершился с ошибкой.
+
