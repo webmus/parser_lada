@@ -5065,11 +5065,9 @@ if ($action == "list") {
                 }
 
                 $hasUniqueUrlHash = ensurePostUrlHashConstraint();
-                $lockAcquired = false;
 
                 if (!$hasUniqueUrlHash) {
-                        $db->query("LOCK TABLES " . PREFIX . "_post WRITE");
-                        $lockAcquired = true;
+                        addLog('⚠️ Уникальный индекс по url_hash недоступен — блокировку таблиц пропускаем, проверяем дубликаты через SELECT');
                 }
 
                 if ($urlHash !== '' && $hasUniqueUrlHash) {
@@ -5080,11 +5078,6 @@ if ($action == "list") {
 
                 if ($is_post && isset($is_post['id']) && $is_post['id'] > 0)
                 {
-                        if ($lockAcquired) {
-                                $db->query("UNLOCK TABLES");
-                                $lockAcquired = false;
-                        }
-
                         echo $url." post exist - {$is_post['id']} <br/>";
                         addLog("Пост уже существует: ".$title . " - ". $url);
                         return false;
@@ -5241,12 +5234,7 @@ if ($action == "list") {
                         $db->query($sql);
                         $id = $db->insert_id();
 
-                        if ($lockAcquired) {
-                                $db->query("UNLOCK TABLES");
-                                $lockAcquired = false;
-                        }
-
-			$db->query( "INSERT INTO " . PREFIX . "_post_extras (news_id, allow_rate, votes, disable_index, access, user_id, disable_search, need_pass) VALUES('{$id}', '1', '0', '0', '0', '1', '0', '0')" );
+                        $db->query( "INSERT INTO " . PREFIX . "_post_extras (news_id, allow_rate, votes, disable_index, access, user_id, disable_search, need_pass) VALUES('{$id}', '1', '0', '0', '0', '1', '0', '0')" );
 			$db->query( "INSERT INTO " . PREFIX . "_post_extras_cats (news_id, cat_id) VALUES('{$id}', '$category_news')" );
 			
 			$row = $db->super_query("SELECT * FROM ".PREFIX."_post where ID=".$id);
@@ -5421,11 +5409,6 @@ if ($action == "list") {
                 }
                 else
                 {
-                        if ($lockAcquired) {
-                                $db->query("UNLOCK TABLES");
-                                $lockAcquired = false;
-                        }
-
                         logStage('ADD_SKIPPED', [
                                 'reason' => 'EMPTY_TITLE_OR_TEXT',
                                 'url' => $url
