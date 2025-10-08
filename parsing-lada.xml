@@ -6390,6 +6390,35 @@ foreach ($posterSelectors as $posterSelector) {
         }
 }
 
+$captionText = '';
+$captionSelectors = [
+        ".//*[contains(concat(' ', normalize-space(@class), ' '), ' news__image-caption ')]",
+        ".//figcaption[contains(concat(' ', normalize-space(@class), ' '), ' image-caption ')]",
+        ".//figcaption"
+];
+
+foreach ($captionSelectors as $captionSelector) {
+        $captionNode = $xpath->query($captionSelector, $contentNode)->item(0);
+
+        if (!$captionNode) {
+                continue;
+        }
+
+        $captionCandidate = trim(preg_replace('/\s+/u', ' ', $captionNode->textContent));
+
+        if ($captionCandidate !== '') {
+                $captionText = $captionCandidate;
+        }
+
+        if ($captionNode->parentNode) {
+                $captionNode->parentNode->removeChild($captionNode);
+        }
+
+        if ($captionText !== '') {
+                break;
+        }
+}
+
 $removeSelectors = [
         ".//script",
         ".//style",
@@ -6472,26 +6501,6 @@ $images = array_values(array_unique($images));
 
 if ($posterFromArticle !== '' && !in_array($posterFromArticle, $images, true)) {
         array_unshift($images, $posterFromArticle);
-}
-
-$captionText = '';
-$captionSelectors = [
-        ".//*[contains(concat(' ', normalize-space(@class), ' '), ' news__image-caption ')]",
-        ".//figcaption[contains(concat(' ', normalize-space(@class), ' '), ' image-caption ')]",
-        ".//figcaption"
-];
-
-foreach ($captionSelectors as $captionSelector) {
-        $captionNode = $xpath->query($captionSelector, $contentNode)->item(0);
-
-        if ($captionNode) {
-                $captionCandidate = trim(preg_replace('/\s+/u', ' ', $captionNode->textContent));
-
-                if ($captionCandidate !== '') {
-                        $captionText = $captionCandidate;
-                        break;
-                }
-        }
 }
 
 if (trim($short_story) === '' && $preparedExtract !== '') {
