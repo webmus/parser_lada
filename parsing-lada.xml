@@ -11,6 +11,9 @@
 	<needplugin></needplugin>
 	<mnotice>0</mnotice>
 	<mysqlinstall><![CDATA[alter table {prefix}_post add url text not null default '';
+alter table {prefix}_post add url_hash char(32) not null default '';
+update {prefix}_post set url_hash = md5(lower(trim(url))) where url != '';
+alter table {prefix}_post add unique key idx_post_url_hash (url_hash);
 alter table {prefix}_post add rewrite_done int(4) not null default 0;
 alter table {prefix}_post add rewrite_date int(11) not null default 0;
 alter table {prefix}_post add original_story text not null default '';
@@ -4403,103 +4406,173 @@ if ($action == "list") {
     unlink($lockFile);
 } 
 	
-	if ($action == "news")
-	{
-      
+        if ($action == "news")
+        {
+
         file_put_contents(ROOT_DIR . "/../log.txt", date('Y-m-d H:i:s') . " старт: ".$config['http_home_url']." parse news\n", FILE_APPEND);
         logStage('NEWS_START');
-      
-		if (file_exists(ENGINE_DIR . "/data/list.dat"))
-		{
-			$lines = file(ENGINE_DIR . "/data/list.dat", FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-			$updatedLines = [];
 
-			$post_count = 1;//$settings['post_count'];
+                $newsLockFile = ENGINE_DIR . "/data/parse_news.lock";
+                $newsLockHandle = fopen($newsLockFile, "c+");
 
-			$i = 0;
-			foreach ($lines as $line) {
-				$item = json_decode($line, true);
-				if (!is_array($item)) continue;
+                if (!$newsLockHandle) {
+                        addLog('Не удалось открыть файл блокировки parse_news.lock');
+                        die('parse_news.lock open error');
+                }
 
-				$json = file_get_contents(ENGINE_DIR . "/parser/" . $item['settings_file']);
-				$settings = json_decode($json, true);
+                if (!flock($newsLockHandle, LOCK_EX | LOCK_NB)) {
+                        addLog('action=news: обнаружен параллельный запуск, выполнение прекращено');
+                        fclose($newsLockHandle);
+                        die('parse news already running');
+                }
 
-                                if ($item['status'] === 'Новый' && $i < $post_count) {
+                $queueHandle = null;
+                $queueFile = ENGINE_DIR . "/data/list.dat";
+
+                $queueHandle = fopen($queueFile, "c+");
+
+                if (!$queueHandle) {
+                        addLog('Не удалось открыть очередь list.dat');
+                } else {
+                        if (!flock($queueHandle, LOCK_EX)) {
+                                addLog('Не удалось заблокировать очередь list.dat');
+                        } else {
+                                rewind($queueHandle);
+                                $rawQueue = stream_get_contents($queueHandle);
+                                if ($rawQueue === false) {
+                                        $rawQueue = '';
+                                }
+
+                                $lines = array_filter(array_map('trim', explode(PHP_EOL, $rawQueue)));
+                                $items = [];
+
+                                foreach ($lines as $line) {
+                                        $decoded = json_decode($line, true);
+                                        if (is_array($decoded)) {
+                                                $items[] = $decoded;
+                                        }
+                                }
+
+                                $post_count = 1;//$settings['post_count'];
+                                $processed = 0;
+
+                                foreach ($items as $index => &$item) {
+                                        if (!is_array($item)) {
+                                                continue;
+                                        }
+
+                                        $status = isset($item['status']) ? $item['status'] : '';
+
+                                        if ($status === 'В работе') {
+                                                $startedAt = isset($item['started_at']) ? (int)$item['started_at'] : 0;
+
+                                                if ($startedAt > 0 && (time() - $startedAt) > 600) {
+                                                        $item['status'] = 'Новый';
+                                                        unset($item['started_at'], $item['finished_at']);
+                                                        $item['recovered_at'] = time();
+                                                        rewriteQueueFile($queueHandle, $items);
+
+                                                        logStage('NEWS_ITEM_RECOVERED', [
+                                                                'source' => $item['source'],
+                                                                'link' => $item['post_link']
+                                                        ]);
+
+                                                        $status = 'Новый';
+                                                }
+                                        }
+
+                                        if ($status !== 'Новый' || $processed >= $post_count) {
+                                                continue;
+                                        }
+
+                                        $settingsPath = ENGINE_DIR . "/parser/" . $item['settings_file'];
+                                        $settingsJson = is_file($settingsPath) ? file_get_contents($settingsPath) : '';
+                                        $settings = $settingsJson ? json_decode($settingsJson, true) : [];
+
+                                        $item['status'] = 'В работе';
+                                        $item['started_at'] = time();
+                                        rewriteQueueFile($queueHandle, $items);
+
                                         logStage('NEWS_ITEM_START', [
                                                 'source' => $item['source'],
                                                 'link' => $item['post_link'],
                                                 'settings' => $item['settings_file']
                                         ]);
 
-                                        // parse post
-
                                         if ($item['source'] == "kyzylorda_news")
                                         {
-                                                $i++;
+                                                $processed++;
                                                 include (DLEPlugins::Check(ENGINE_DIR . '/modules/parse_kyzylorda_news.php'));
                                         }
-					if ($item['source'] == "mgorod")
-					{
-						$i++;
-						include (DLEPlugins::Check(ENGINE_DIR . '/modules/parse_mgorod.php'));
-					}
-					if ($item['source'] == "otyrar")
-					{
-						$i++;
-						include (DLEPlugins::Check(ENGINE_DIR . '/modules/parse_otyrar.php'));
-					}
-					if ($item['source'] == "diapazon")
-					{
-						$i++;
-						include (DLEPlugins::Check(ENGINE_DIR . '/modules/parse_diapazon.php'));
-					}
-					if ($item['source'] == "pavlodarnews")
-					{
-						$i++;
-						include (DLEPlugins::Check(ENGINE_DIR . '/modules/parse_pavlodarnews.php'));
-					}
+                                        if ($item['source'] == "mgorod")
+                                        {
+                                                $processed++;
+                                                include (DLEPlugins::Check(ENGINE_DIR . '/modules/parse_mgorod.php'));
+                                        }
+                                        if ($item['source'] == "otyrar")
+                                        {
+                                                $processed++;
+                                                include (DLEPlugins::Check(ENGINE_DIR . '/modules/parse_otyrar.php'));
+                                        }
+                                        if ($item['source'] == "diapazon")
+                                        {
+                                                $processed++;
+                                                include (DLEPlugins::Check(ENGINE_DIR . '/modules/parse_diapazon.php'));
+                                        }
+                                        if ($item['source'] == "pavlodarnews")
+                                        {
+                                                $processed++;
+                                                include (DLEPlugins::Check(ENGINE_DIR . '/modules/parse_pavlodarnews.php'));
+                                        }
                                         if ($item['source'] == "azh")
                                         {
-                                                $i++;
+                                                $processed++;
                                                 include (DLEPlugins::Check(ENGINE_DIR . '/modules/parse_azh.php'));
                                         }
                                         if ($item['source'] == "lada")
                                         {
-                                                $i++;
+                                                $processed++;
                                                 include (DLEPlugins::Check(ENGINE_DIR . '/modules/parse_lada.php'));
                                         }
                                         if ($item['source'] == "tengri")
                                         {
-                                                $i++;
+                                                $processed++;
 
                                                 include (DLEPlugins::Check(ENGINE_DIR . '/modules/parse_tengri.php'));
-					}
-					if ($item['source'] == "mybuh_news")
-					{
-						$i++;
-						include (DLEPlugins::Check(ENGINE_DIR . '/modules/mybuh_news.php'));
-					}			
+                                        }
+                                        if ($item['source'] == "mybuh_news")
+                                        {
+                                                $processed++;
+                                                include (DLEPlugins::Check(ENGINE_DIR . '/modules/mybuh_news.php'));
+                                        }
                                         if ($item['source'] == "mybuh_alluseful")
                                         {
-                                                $i++;
+                                                $processed++;
                                                 include (DLEPlugins::Check(ENGINE_DIR . '/modules/mybuh_alluseful.php'));
                                         }
-                                        // update record
 
                                         $item['status'] = "Спарсено";
+                                        $item['finished_at'] = time();
+                                        rewriteQueueFile($queueHandle, $items);
+
                                         logStage('NEWS_ITEM_DONE', [
                                                 'source' => $item['source'],
                                                 'link' => $item['post_link']
                                         ]);
-
                                 }
+                                unset($item);
 
-				$updatedLines[] = json_encode($item, JSON_UNESCAPED_UNICODE);
-				
-				if ($i > $post_count) continue;
-			}
-			file_put_contents(ENGINE_DIR . "/data/list.dat", implode(PHP_EOL, $updatedLines) . PHP_EOL);
+                                rewriteQueueFile($queueHandle, $items);
+
+                                flock($queueHandle, LOCK_UN);
+                        }
+
+                        fclose($queueHandle);
                 }
+
+                flock($newsLockHandle, LOCK_UN);
+                fclose($newsLockHandle);
+                @unlink($newsLockFile);
         }
 
         logStage('NEWS_END');
@@ -4631,6 +4704,77 @@ if ($action == "list") {
                 }
 
                 addLog($message);
+        }
+
+        function rewriteQueueFile($handle, array $items)
+        {
+                if (!is_resource($handle)) {
+                        return;
+                }
+
+                $payload = [];
+
+                foreach ($items as $item) {
+                        if (is_array($item)) {
+                                $payload[] = json_encode($item, JSON_UNESCAPED_UNICODE);
+                        }
+                }
+
+                $data = implode(PHP_EOL, array_filter($payload, 'strlen'));
+                if ($data !== '') {
+                        $data .= PHP_EOL;
+                }
+
+                rewind($handle);
+                ftruncate($handle, 0);
+
+                if ($data !== '') {
+                        fwrite($handle, $data);
+                }
+
+                fflush($handle);
+        }
+
+        function ensurePostUrlHashConstraint()
+        {
+                static $constraintReady = null;
+
+                if ($constraintReady === true) {
+                        return true;
+                }
+
+                global $db;
+
+                $table = PREFIX . "_post";
+
+                $column = $db->super_query("SHOW COLUMNS FROM {$table} LIKE 'url_hash'");
+
+                if (!$column) {
+                        $db->query("ALTER TABLE {$table} ADD COLUMN url_hash CHAR(32) NOT NULL DEFAULT ''");
+                }
+
+                $db->query("UPDATE {$table} SET url_hash = MD5(LOWER(TRIM(url))) WHERE url != '' AND url_hash = ''");
+
+                $duplicate = $db->super_query("SELECT url_hash, COUNT(*) AS cnt FROM {$table} WHERE url_hash != '' GROUP BY url_hash HAVING cnt > 1 LIMIT 1");
+
+                if ($duplicate && isset($duplicate['cnt']) && (int)$duplicate['cnt'] > 1) {
+                        addLog('Обнаружены дубликаты url_hash=' . $duplicate['url_hash'] . ' — уникальный индекс не создан');
+                        return false;
+                }
+
+                $index = $db->super_query("SHOW INDEX FROM {$table} WHERE Key_name = 'idx_url_hash'");
+
+                if (!$index) {
+                        $db->query("ALTER TABLE {$table} ADD UNIQUE KEY idx_url_hash (url_hash)");
+                        $index = $db->super_query("SHOW INDEX FROM {$table} WHERE Key_name = 'idx_url_hash'");
+                }
+
+                if ($index) {
+                        $constraintReady = true;
+                        return true;
+                }
+
+                return false;
         }
 
         function doGPT($promt)
@@ -4889,17 +5033,46 @@ if ($action == "list") {
 		$title = $parse->process(  trim( strip_tags ($title) ) );
 		$alt_name = totranslit($title);
 		$alt_name = str_replace(".", "", $alt_name);
-		$alt_name = str_replace(",", "", $alt_name);
+                $alt_name = str_replace(",", "", $alt_name);
 
-		
+                $url = trim((string)$url);
+                $normalizedUrl = $url;
+                if ($normalizedUrl !== '') {
+                        if (function_exists('mb_strtolower')) {
+                                $normalizedUrl = mb_strtolower($normalizedUrl, 'UTF-8');
+                        } else {
+                                $normalizedUrl = strtolower($normalizedUrl);
+                        }
+                }
 
-		$is_post = $db->super_query("SELECT * FROM ".PREFIX."_post where url='$url' limit 0,1");
-		if ($is_post['id']>0)
-		{
-			echo $url." post exist - {$is_post['id']} <br/>";
-			addLog("Пост уже существует: ".$title . " - ". $url);
-			return false;
-		}	
+                $urlHash = $normalizedUrl !== '' ? md5($normalizedUrl) : '';
+                $safeUrl = $db->safesql($url);
+                $safeUrlHash = $db->safesql($urlHash);
+                $hasUniqueUrlHash = ensurePostUrlHashConstraint();
+                $lockAcquired = false;
+
+                if (!$hasUniqueUrlHash) {
+                        $db->query("LOCK TABLES " . PREFIX . "_post WRITE");
+                        $lockAcquired = true;
+                }
+
+                if ($urlHash !== '' && $hasUniqueUrlHash) {
+                        $is_post = $db->super_query("SELECT id FROM " . PREFIX . "_post WHERE url_hash='{$safeUrlHash}' LIMIT 0,1");
+                } else {
+                        $is_post = $db->super_query("SELECT id FROM " . PREFIX . "_post WHERE url='{$safeUrl}' LIMIT 0,1");
+                }
+
+                if ($is_post && isset($is_post['id']) && $is_post['id'] > 0)
+                {
+                        if ($lockAcquired) {
+                                $db->query("UNLOCK TABLES");
+                                $lockAcquired = false;
+                        }
+
+                        echo $url." post exist - {$is_post['id']} <br/>";
+                        addLog("Пост уже существует: ".$title . " - ". $url);
+                        return false;
+                }
 		
                 $xfields[] = array();
                 $xfields['source'] = $source;
@@ -5037,31 +5210,38 @@ if ($action == "list") {
 		}
 
 
-			$sql="INSERT INTO ".PREFIX."_post set
-							approve=1,
-							category='$category_news',
-							descr='',
-							short_story='$short_story',
-							xfields='$xfields_str',
-							title='{$title}',
-							metatitle='',
-							autor='$user_name',
-							date='$c_date',
-							alt_name='$alt_name',
-							full_story='$text',
-							url ='$url'
-						";
+                        $sql="INSERT INTO ".PREFIX."_post set
+                                                        approve=1,
+                                                        category='$category_news',
+                                                        descr='',
+                                                        short_story='$short_story',
+                                                        xfields='$xfields_str',
+                                                        title='{$title}',
+                                                        metatitle='',
+                                                        autor='$user_name',
+                                                        date='$c_date',
+                                                        alt_name='$alt_name',
+                                                        full_story='$text',
+                                                        url ='$safeUrl',
+                                                        url_hash='$safeUrlHash'
+                                                ";
 
                 logStage('ADD_BEFORE_INSERT', [
                         'title' => $title,
                         'alt_name' => $alt_name,
-                        'url' => $url
+                        'url' => $url,
+                        'url_hash' => $urlHash
                 ]);
 
                 if ($title != "" && trim($text) != "")
                 {
                         $db->query($sql);
                         $id = $db->insert_id();
+
+                        if ($lockAcquired) {
+                                $db->query("UNLOCK TABLES");
+                                $lockAcquired = false;
+                        }
 
 			$db->query( "INSERT INTO " . PREFIX . "_post_extras (news_id, allow_rate, votes, disable_index, access, user_id, disable_search, need_pass) VALUES('{$id}', '1', '0', '0', '0', '1', '0', '0')" );
 			$db->query( "INSERT INTO " . PREFIX . "_post_extras_cats (news_id, cat_id) VALUES('{$id}', '$category_news')" );
@@ -5070,7 +5250,8 @@ if ($action == "list") {
 			
                         logStage('ADD_SUCCESS', [
                                 'id' => $id,
-                                'alt_name' => $alt_name
+                                'alt_name' => $alt_name,
+                                'url_hash' => $urlHash
                         ]);
 
                         $c_url = get_url(  $row['category'] );
@@ -5237,6 +5418,11 @@ if ($action == "list") {
                 }
                 else
                 {
+                        if ($lockAcquired) {
+                                $db->query("UNLOCK TABLES");
+                                $lockAcquired = false;
+                        }
+
                         logStage('ADD_SKIPPED', [
                                 'reason' => 'EMPTY_TITLE_OR_TEXT',
                                 'url' => $url
