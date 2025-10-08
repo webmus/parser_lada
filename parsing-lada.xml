@@ -5088,33 +5088,110 @@ if ($action == "list") {
 	<file name="engine/modules/helpers.php">
 		<operation action="create">
 			<replacecode><![CDATA[<?php
-	function getPageContent(string $url, int $timeout = 10, bool $verifySSL = true)
-	{
-		$ch = curl_init($url);
-		curl_setopt_array($ch, [
-			CURLOPT_RETURNTRANSFER => true,
-			CURLOPT_FOLLOWLOCATION => true,
-			CURLOPT_USERAGENT => 'Mozilla/5.0 (compatible; ParserBot/1.0)',
-			CURLOPT_CONNECTTIMEOUT => 5,
-			CURLOPT_TIMEOUT => $timeout,
-			CURLOPT_SSL_VERIFYPEER => $verifySSL,
-			CURLOPT_SSL_VERIFYHOST => $verifySSL ? 2 : 0,
-		]);
+        function getPageContent(string $url, int $timeout = 10, bool $verifySSL = true)
+        {
+                $ch = curl_init($url);
+                curl_setopt_array($ch, [
+                        CURLOPT_RETURNTRANSFER => true,
+                        CURLOPT_FOLLOWLOCATION => true,
+                        CURLOPT_USERAGENT => 'Mozilla/5.0 (compatible; ParserBot/1.0)',
+                        CURLOPT_CONNECTTIMEOUT => 5,
+                        CURLOPT_TIMEOUT => $timeout,
+                        CURLOPT_SSL_VERIFYPEER => $verifySSL,
+                        CURLOPT_SSL_VERIFYHOST => $verifySSL ? 2 : 0,
+                ]);
 
-		$response = curl_exec($ch);
-		$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-		$error = curl_error($ch);
-		curl_close($ch);
+                $response = curl_exec($ch);
+                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                $error = curl_error($ch);
+                curl_close($ch);
 
-		if ($httpCode !== 200 || $response === false) {
-			if (function_exists('addLog')) {
-				addLog("❌ cURL [$httpCode]: $url | $error");
-			}
-			return false;
-		}
+                if ($httpCode !== 200 || $response === false) {
+                        if (function_exists('addLog')) {
+                                addLog("❌ cURL [$httpCode]: $url | $error");
+                        }
+                        return false;
+                }
 
-		return $response;
-	}
+                return $response;
+        }
+
+        if (!function_exists('lada_normalize_url')) {
+                function lada_normalize_url(string $path, string $base): string
+                {
+                        $path = trim($path);
+
+                        if ($path === '') {
+                                return '';
+                        }
+
+                        if (strpos($path, '//') === 0) {
+                                return 'https:' . $path;
+                        }
+
+                        if (preg_match('#^https?://#i', $path)) {
+                                return $path;
+                        }
+
+                        if ($path[0] === '/') {
+                                return rtrim($base, '/') . $path;
+                        }
+
+                        return rtrim($base, '/') . '/' . $path;
+                }
+        }
+
+        if (!function_exists('lada_import_html_fragment')) {
+                function lada_import_html_fragment(DOMDocument $dom, DOMElement $target, string $html): void
+                {
+                        $html = trim($html);
+
+                        if ($html === '') {
+                                return;
+                        }
+
+                        $previousState = libxml_use_internal_errors(true);
+                        $tempDom = new DOMDocument('1.0', 'UTF-8');
+                        $tempDom->loadHTML('<?xml encoding="utf-8"?>' . $html);
+                        libxml_clear_errors();
+                        libxml_use_internal_errors($previousState);
+
+                        $body = $tempDom->getElementsByTagName('body')->item(0);
+
+                        if (!$body) {
+                                return;
+                        }
+
+                        while ($target->firstChild) {
+                                $target->removeChild($target->firstChild);
+                        }
+
+                        foreach ($body->childNodes as $child) {
+                                $imported = $dom->importNode($child, true);
+                                $target->appendChild($imported);
+                        }
+                }
+        }
+
+        if (!function_exists('lada_collect_from_array')) {
+                function lada_collect_from_array($data, array &$result): void
+                {
+                        if (!is_array($data)) {
+                                return;
+                        }
+
+                        $hasUrl = isset($data['url']) && strpos($data['url'], '/aktau_news/') !== false;
+                        $hasTitle = isset($data['title']) || isset($data['name']);
+
+                        if ($hasUrl && $hasTitle) {
+                                $result[] = $data;
+                        }
+
+                        foreach ($data as $value) {
+                                lada_collect_from_array($value, $result);
+                        }
+                }
+        }
 ?>]]></replacecode>
 			<enabled>1</enabled>
 		</operation>
@@ -5701,83 +5778,6 @@ return $count;
                         <replacecode><![CDATA[<?php
 require_once (DLEPlugins::Check(ENGINE_DIR . '/modules/helpers.php'));
 
-if (!function_exists('lada_normalize_url')) {
-        function lada_normalize_url(string $path, string $base): string
-        {
-                $path = trim($path);
-
-                if ($path === '') {
-                        return '';
-                }
-
-                if (strpos($path, '//') === 0) {
-                        return 'https:' . $path;
-                }
-
-                if (preg_match('#^https?://#i', $path)) {
-                        return $path;
-                }
-
-                if ($path[0] === '/') {
-                        return rtrim($base, '/') . $path;
-                }
-
-                return rtrim($base, '/') . '/' . $path;
-        }
-}
-
-if (!function_exists('lada_import_html_fragment')) {
-        function lada_import_html_fragment(DOMDocument $dom, DOMElement $target, string $html): void
-        {
-                $html = trim($html);
-
-                if ($html === '') {
-                        return;
-                }
-
-                $previousState = libxml_use_internal_errors(true);
-                $tempDom = new DOMDocument('1.0', 'UTF-8');
-                $tempDom->loadHTML('<?xml encoding="utf-8"?>' . $html);
-                libxml_clear_errors();
-                libxml_use_internal_errors($previousState);
-
-                $body = $tempDom->getElementsByTagName('body')->item(0);
-
-                if (!$body) {
-                        return;
-                }
-
-                while ($target->firstChild) {
-                        $target->removeChild($target->firstChild);
-                }
-
-                foreach ($body->childNodes as $child) {
-                        $imported = $dom->importNode($child, true);
-                        $target->appendChild($imported);
-                }
-        }
-}
-
-if (!function_exists('lada_collect_from_array')) {
-        function lada_collect_from_array($data, array &$result): void
-        {
-                if (!is_array($data)) {
-                        return;
-                }
-
-                $hasUrl = isset($data['url']) && strpos($data['url'], '/aktau_news/') !== false;
-                $hasTitle = isset($data['title']) || isset($data['name']);
-
-                if ($hasUrl && $hasTitle) {
-                        $result[] = $data;
-                }
-
-                foreach ($data as $value) {
-                        lada_collect_from_array($value, $result);
-                }
-        }
-}
-
 $baseUrl = 'https://www.lada.kz';
 $content = getPageContent($url, 15, false);
 
@@ -6034,31 +6034,6 @@ return $count;
                 <operation action="create">
                         <replacecode><![CDATA[<?php
 require_once (DLEPlugins::Check(ENGINE_DIR . '/modules/helpers.php'));
-
-if (!function_exists('lada_normalize_url')) {
-        function lada_normalize_url(string $path, string $base): string
-        {
-                $path = trim($path);
-
-                if ($path === '') {
-                        return '';
-                }
-
-                if (strpos($path, '//') === 0) {
-                        return 'https:' . $path;
-                }
-
-                if (preg_match('#^https?://#i', $path)) {
-                        return $path;
-                }
-
-                if ($path[0] === '/') {
-                        return rtrim($base, '/') . $path;
-                }
-
-                return rtrim($base, '/') . '/' . $path;
-        }
-}
 
 $baseUrl = 'https://www.lada.kz';
 
