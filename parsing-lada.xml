@@ -5048,6 +5048,22 @@ if ($action == "list") {
                 $urlHash = $normalizedUrl !== '' ? md5($normalizedUrl) : '';
                 $safeUrl = $db->safesql($url);
                 $safeUrlHash = $db->safesql($urlHash);
+
+                $user_name = "Айгерим";
+
+                $user_group = $config['parser_user_group'];
+
+                $user_id = 0;
+                if ((int)$user_group>0)
+                {
+                        $user_row = $db->super_query("SELECT user_id, name FROM ".PREFIX."_users where user_group=".$user_group);
+
+                        if (is_array($user_row) && isset($user_row['user_id'])) {
+                                $user_name = $user_row['name'];
+                                $user_id = $user_row['user_id'];
+                        }
+                }
+
                 $hasUniqueUrlHash = ensurePostUrlHashConstraint();
                 $lockAcquired = false;
 
@@ -5197,19 +5213,6 @@ if ($action == "list") {
 		
 		$c_date = date( "Y-m-d H:i:s", $c_time);
 		
-		$user_name = "Айгерим";
-
-		$user_group = $config['parser_user_group'];
-
-		$user_id = 0;
-		if ((int)$user_group>0)
-		{
-			$user_id = $db->super_query("SELECT user_id, name FROM ".PREFIX."_users where user_group=".$user_group);
-			$user_name = $user_id['name'];
-			$user_id = $user_id['user_id'];
-		}
-
-
                         $sql="INSERT INTO ".PREFIX."_post set
                                                         approve=1,
                                                         category='$category_news',
