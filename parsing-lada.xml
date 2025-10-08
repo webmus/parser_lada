@@ -6263,6 +6263,22 @@ if ($originalHtml !== '') {
         lada_import_html_fragment($dom, $contentNode, $decoded);
 }
 
+if ($contentNode instanceof DOMElement && $contentNode->hasAttribute('data-original')) {
+        $contentNode->removeAttribute('data-original');
+}
+
+$dataOriginalNodes = $xpath->query(".//*[@data-original]", $contentNode);
+
+if ($dataOriginalNodes instanceof DOMNodeList) {
+        for ($index = 0; $index < $dataOriginalNodes->length; $index++) {
+                $nodeWithAttribute = $dataOriginalNodes->item($index);
+
+                if ($nodeWithAttribute instanceof DOMElement) {
+                        $nodeWithAttribute->removeAttribute('data-original');
+                }
+        }
+}
+
 $extractNode = $xpath->query("//div[contains(@class,'news__extract')]")->item(0);
 $preparedExtract = '';
 
@@ -6285,6 +6301,10 @@ if ($extractNode) {
                                 $preparedExtract = trim(preg_replace('/\s+/u', ' ', $body->textContent));
                         }
                 }
+        }
+
+        if ($extractNode instanceof DOMElement && $extractNode->hasAttribute('data-original')) {
+                $extractNode->removeAttribute('data-original');
         }
 
         if ($preparedExtract === '') {
