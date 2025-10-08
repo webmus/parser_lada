@@ -4807,11 +4807,14 @@ if ($action == "list") {
 	}
 
 	
-        function addPost($short_story, $source, $time, $title, $text, $picture_preview, $picture_main, $url, $images, $category, $add_source = true)
+        function addPost($short_story, $source, $time, $title, $text, $picture_preview, $picture_main, $url, $images, $category, $caption = '', $add_source = true)
         {
                 global $db, $parse, $config, $category_news, $settings;
 
                 if ($text == "") return false;
+
+                $xfields = [];
+                $caption = is_string($caption) ? trim($caption) : '';
 
                 addLog("Добавление поста: ".$title);
                 $logTitle = trim(preg_replace('/\s+/u', ' ', strip_tags($title)));
@@ -4898,10 +4901,14 @@ if ($action == "list") {
 			return false;
 		}	
 		
-		$xfields[] = array();
-		$xfields['source'] = $source;
-		$xfields['post_link'] = $url;
-		$xfields['time'] = $time;
+                $xfields[] = array();
+                $xfields['source'] = $source;
+                $xfields['post_link'] = $url;
+                $xfields['time'] = $time;
+
+                if ($caption !== '') {
+                        $xfields['caption'] = $caption;
+                }
 						
 		$j = 0;
 
@@ -6406,6 +6413,26 @@ for ($index = $imageNodes->length - 1; $index >= 0; $index--) {
 
 $images = array_values(array_unique($images));
 
+$captionText = '';
+$captionSelectors = [
+        ".//*[contains(concat(' ', normalize-space(@class), ' '), ' news__image-caption ')]",
+        ".//figcaption[contains(concat(' ', normalize-space(@class), ' '), ' image-caption ')]",
+        ".//figcaption"
+];
+
+foreach ($captionSelectors as $captionSelector) {
+        $captionNode = $xpath->query($captionSelector, $contentNode)->item(0);
+
+        if ($captionNode) {
+                $captionCandidate = trim(preg_replace('/\s+/u', ' ', $captionNode->textContent));
+
+                if ($captionCandidate !== '') {
+                        $captionText = $captionCandidate;
+                        break;
+                }
+        }
+}
+
 if (trim($short_story) === '' && $preparedExtract !== '') {
         $short_story = $preparedExtract;
 }
@@ -6452,7 +6479,7 @@ if (!$poster && !empty($images)) {
         $poster = $images[0];
 }
 
-addPost($short_story, "https://www.lada.kz", "", $title, $text, $poster, $poster, $post_link, $images, $category_news);
+addPost($short_story, "https://www.lada.kz", "", $title, $text, $poster, $poster, $post_link, $images, $category_news, $captionText);
 ?>]]></replacecode>
                         <enabled>1</enabled>
                 </operation>
