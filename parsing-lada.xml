@@ -6528,6 +6528,17 @@ for ($index = $anchorNodes->length - 1; $index >= 0; $index--) {
 
 $text = trim($dom->saveHTML($contentNode));
 
+if ($captionText !== '' && stripos($text, 'news__image-caption') === false) {
+        $escapedCaption = htmlspecialchars($captionText, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $captionHtml = '<div class="news__image-caption xs-mb-15 xl-mb-35">' . $escapedCaption . '</div>';
+
+        $text = preg_replace('/(<img\b[^>]*>)/iu', '$1' . $captionHtml, $text, 1, $replacedCount);
+
+        if ((int)$replacedCount === 0) {
+                $text .= $captionHtml;
+        }
+}
+
 if ($text === '') {
         return;
 }
