@@ -5361,7 +5361,226 @@ if ($action == "list") {
 			<enabled>1</enabled>
 		</operation>
 	</file>
-	<file name="engine/modules/parse_tengri.php">
+        <file name="engine/modules/parse_azh.php">
+                <operation action="create">
+                        <replacecode><![CDATA[<?php
+require_once (DLEPlugins::Check(ENGINE_DIR . '/modules/helpers.php'));
+
+$baseUrl = 'https://azh.kz';
+
+$title = isset($item['title']) ? $item['title'] : '';
+$post_link = $item['post_link'];
+$short_story = isset($item['short_story']) ? $item['short_story'] : '';
+$category_news = $item['category'];
+$poster = isset($item['poster']) ? $item['poster'] : '';
+
+$content = getPageContent($post_link, 20);
+
+if (!$content) {
+        return;
+}
+
+$normalizeText = static function ($text) {
+        if ($text === null) {
+                return '';
+        }
+
+        if (!is_string($text)) {
+                $text = (string) $text;
+        }
+
+        $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = preg_replace('/\s+/u', ' ', $text);
+
+        return trim($text);
+};
+
+$resolveImageSource = static function (DOMElement $img) use ($baseUrl) {
+        $attributes = [
+                'src',
+                'data-src',
+                'data-original',
+                'data-lazy',
+                'data-href',
+                'srcset',
+                'data-srcset'
+        ];
+
+        foreach ($attributes as $attribute) {
+                if (!$img->hasAttribute($attribute)) {
+                        continue;
+                }
+
+                $value = trim($img->getAttribute($attribute));
+
+                if ($value === '') {
+                        continue;
+                }
+
+                if ($attribute === 'srcset' || $attribute === 'data-srcset') {
+                        $parts = preg_split('/\s*,\s*/u', $value);
+                        $value = $parts[0] ?? '';
+
+                        if ($value !== '') {
+                                $value = trim(preg_split('/\s+/u', $value)[0]);
+                        }
+                }
+
+                if ($value === '') {
+                        continue;
+                }
+
+                $normalized = lada_normalize_url($value, $baseUrl);
+
+                if ($normalized !== '') {
+                        return $normalized;
+                }
+        }
+
+        return '';
+};
+
+$previousState = libxml_use_internal_errors(true);
+$dom = new DOMDocument('1.0', 'UTF-8');
+$dom->loadHTML('<?xml encoding="utf-8"?>' . $content);
+libxml_clear_errors();
+libxml_use_internal_errors($previousState);
+
+$xpath = new DOMXPath($dom);
+
+$titleNode = $xpath->query('//h1')->item(0);
+
+if ($titleNode) {
+        $title = $normalizeText($titleNode->textContent);
+}
+
+$bodyNode = $xpath->query("//div[contains(@class,'user-content') and contains(@class,'mb-5') and @itemprop='articleBody']")->item(0);
+
+if (!$bodyNode instanceof DOMElement) {
+        return;
+}
+
+foreach ($xpath->query('.//script|.//style|.//noscript', $bodyNode) as $node) {
+        if ($node->parentNode) {
+                $node->parentNode->removeChild($node);
+        }
+}
+
+foreach ($xpath->query(".//*[@id='ad_inside_1']", $bodyNode) as $node) {
+        if ($node->parentNode) {
+                $node->parentNode->removeChild($node);
+        }
+}
+
+foreach ($xpath->query(".//*[contains(@class,'kursiv-widget') or contains(@class,'banner') or contains(@class,'advert') or contains(@class,'adv-') or contains(@class,'promo')]", $bodyNode) as $node) {
+        if ($node->parentNode) {
+                $node->parentNode->removeChild($node);
+        }
+}
+
+foreach ($xpath->query('.//comment()', $bodyNode) as $node) {
+        if ($node->parentNode) {
+                $node->parentNode->removeChild($node);
+        }
+}
+
+$anchorNodes = $xpath->query('.//a', $bodyNode);
+
+for ($index = $anchorNodes->length - 1; $index >= 0; $index--) {
+        $anchor = $anchorNodes->item($index);
+
+        if (!$anchor || !$anchor->parentNode) {
+                continue;
+        }
+
+        $fragment = $dom->createDocumentFragment();
+
+        while ($anchor->firstChild) {
+                $fragment->appendChild($anchor->firstChild);
+        }
+
+        $anchor->parentNode->replaceChild($fragment, $anchor);
+}
+
+$posterFromArticle = '';
+$imageNodes = $xpath->query('.//img', $bodyNode);
+$images = [];
+
+for ($index = 0; $index < $imageNodes->length; $index++) {
+        $img = $imageNodes->item($index);
+
+        if (!$img instanceof DOMElement) {
+                continue;
+        }
+
+        $normalized = $resolveImageSource($img);
+
+        if ($normalized === '') {
+                if ($img->parentNode) {
+                        $img->parentNode->removeChild($img);
+                }
+
+                continue;
+        }
+
+        if ($posterFromArticle === '') {
+                $posterFromArticle = $normalized;
+        }
+
+        $images[] = $normalized;
+        $img->setAttribute('src', $normalized);
+        $img->removeAttribute('data-src');
+        $img->removeAttribute('data-original');
+        $img->removeAttribute('data-lazy');
+        $img->removeAttribute('loading');
+}
+
+$images = array_values(array_unique($images));
+
+if (trim($short_story) === '') {
+        $firstParagraph = $xpath->query('.//p[normalize-space()]', $bodyNode)->item(0);
+
+        if ($firstParagraph) {
+                $short_story = $normalizeText($firstParagraph->textContent);
+        }
+}
+
+$text = '';
+
+for ($child = $bodyNode->firstChild; $child; $child = $child->nextSibling) {
+        $text .= $dom->saveHTML($child);
+}
+
+$text = preg_replace('/<p>(\s|&nbsp;|<br\s*\/?\s*>)*<\/p>/iu', '', $text);
+$text = trim($text);
+
+if ($text === '') {
+        return;
+}
+
+if ($posterFromArticle !== '') {
+        $poster = $posterFromArticle;
+}
+
+if ($poster !== '') {
+        $poster = lada_normalize_url($poster, $baseUrl);
+}
+
+if ($poster === '' && !empty($images)) {
+        $poster = $images[0];
+}
+
+if (empty($images) && $poster !== '') {
+        $images[] = $poster;
+}
+
+$res = addPost($short_story, 'azh', '', $title, $text, $poster, $poster, $post_link, $images, $category_news);
+
+?>]]></replacecode>
+                        <enabled>1</enabled>
+                </operation>
+        </file>
+        <file name="engine/modules/parse_tengri.php">
 		<operation action="create">
 			<replacecode><![CDATA[<?php
 	//$url = $config['tengri_source'];
@@ -5463,7 +5682,215 @@ if ($action == "list") {
 			<enabled>1</enabled>
 		</operation>
 	</file>
-	<file name="engine/modules/parse_tengri_list.php">
+        <file name="engine/modules/parse_azh_list.php">
+                <operation action="create">
+                        <replacecode><![CDATA[<?php
+require_once (DLEPlugins::Check(ENGINE_DIR . '/modules/helpers.php'));
+
+$baseUrl = 'https://azh.kz';
+$count = 0;
+
+$content = getPageContent($url, 20);
+
+if ($content === false) {
+        return 0;
+}
+
+$previousState = libxml_use_internal_errors(true);
+$dom = new DOMDocument('1.0', 'UTF-8');
+$dom->loadHTML('<?xml encoding="utf-8"?>' . $content);
+libxml_clear_errors();
+libxml_use_internal_errors($previousState);
+
+$xpath = new DOMXPath($dom);
+
+$container = $xpath->query("//div[contains(concat(' ', normalize-space(@class), ' '), ' articles ')]")->item(0);
+
+if (!$container instanceof DOMElement) {
+        return 0;
+}
+
+$normalizeText = static function ($text) {
+        if ($text === null) {
+                return '';
+        }
+
+        if (!is_string($text)) {
+                $text = (string) $text;
+        }
+
+        $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = preg_replace('/\s+/u', ' ', $text);
+
+        return trim($text);
+};
+
+$resolveImageSource = static function (DOMElement $node) use ($baseUrl) {
+        $attributes = [
+                'src',
+                'data-src',
+                'data-original',
+                'data-lazy',
+                'srcset',
+                'data-srcset'
+        ];
+
+        foreach ($attributes as $attribute) {
+                if (!$node->hasAttribute($attribute)) {
+                        continue;
+                }
+
+                $value = trim($node->getAttribute($attribute));
+
+                if ($value === '') {
+                        continue;
+                }
+
+                if ($attribute === 'srcset' || $attribute === 'data-srcset') {
+                        $parts = preg_split('/\s*,\s*/u', $value);
+                        $value = $parts[0] ?? '';
+
+                        if ($value !== '') {
+                                $value = trim(preg_split('/\s+/u', $value)[0]);
+                        }
+                }
+
+                if ($value === '') {
+                        continue;
+                }
+
+                $normalized = lada_normalize_url($value, $baseUrl);
+
+                if ($normalized !== '') {
+                        return $normalized;
+                }
+        }
+
+        return '';
+};
+
+if (!function_exists('azh_is_today_publication')) {
+        function azh_is_today_publication(string $text): bool
+        {
+                $text = mb_strtolower(trim($text));
+
+                if ($text === '') {
+                        return false;
+                }
+
+                $text = str_replace(['&nbsp;', "\xC2\xA0"], ' ', $text);
+
+                if (mb_stripos($text, 'сегодня') !== false) {
+                        return true;
+                }
+
+                $months = [
+                        'января' => 1,
+                        'февраля' => 2,
+                        'марта' => 3,
+                        'апреля' => 4,
+                        'мая' => 5,
+                        'июня' => 6,
+                        'июля' => 7,
+                        'августа' => 8,
+                        'сентября' => 9,
+                        'октября' => 10,
+                        'ноября' => 11,
+                        'декабря' => 12,
+                ];
+
+                if (preg_match('/(\d{1,2})\s+([а-яё]+)(?:\s+(\d{4}))?/u', $text, $matches)) {
+                        $day = (int) $matches[1];
+                        $monthName = $matches[2];
+                        $year = isset($matches[3]) && $matches[3] ? (int) $matches[3] : (int) date('Y');
+
+                        if (isset($months[$monthName])) {
+                                $formatted = sprintf('%04d-%02d-%02d', $year, $months[$monthName], $day);
+
+                                return $formatted === date('Y-m-d');
+                        }
+                }
+
+                return false;
+        }
+}
+
+$articles = $xpath->query('.//article', $container);
+
+foreach ($articles as $article) {
+        if (!$article instanceof DOMElement) {
+                continue;
+        }
+
+        $linkNode = $xpath->query(".//a[contains(@class,'news-list__item')]", $article)->item(0);
+
+        if (!$linkNode instanceof DOMElement) {
+                continue;
+        }
+
+        $href = trim($linkNode->getAttribute('href'));
+
+        if ($href === '') {
+                continue;
+        }
+
+        $fullLink = lada_normalize_url($href, $baseUrl);
+
+        if ($fullLink === '') {
+                continue;
+        }
+
+        $dateOk = false;
+        $dateNodes = $xpath->query(".//small[contains(@class,'text-muted')]", $article);
+
+        foreach ($dateNodes as $dateNode) {
+                $dateText = $normalizeText($dateNode->textContent);
+
+                if ($dateText !== '' && azh_is_today_publication($dateText)) {
+                        $dateOk = true;
+                        break;
+                }
+        }
+
+        if (!$dateOk) {
+                continue;
+        }
+
+        $titleNode = $xpath->query(".//h3[contains(@class,'news-list__title')]", $article)->item(0);
+        $title = $titleNode ? $normalizeText($titleNode->textContent) : '';
+
+        if ($title === '') {
+                continue;
+        }
+
+        $announceNode = $xpath->query(".//span[contains(@class,'news-list__announce')]", $article)->item(0);
+        $short_story = $announceNode ? $normalizeText($announceNode->textContent) : '';
+
+        $poster = '';
+        $posterNode = $xpath->query(".//span[contains(@class,'news-list__image')]//img", $article)->item(0);
+
+        if ($posterNode instanceof DOMElement) {
+                $poster = $resolveImageSource($posterNode);
+        }
+
+        $safe_link = $db->safesql($fullLink);
+        $is_post = $db->super_query("SELECT count(*) as count FROM " . PREFIX . "_post WHERE url='$safe_link' LIMIT 1");
+
+        if ($is_post['count'] > 0) {
+                continue;
+        }
+
+        if (addToList('azh', $title, $poster, $fullLink, $short_story, $category_news, $file)) {
+                $count++;
+        }
+}
+
+return $count;
+?>]]></replacecode>
+                        <enabled>1</enabled>
+                </operation>
+        </file>
+        <file name="engine/modules/parse_tengri_list.php">
 		<operation action="create">
 			<replacecode><![CDATA[<?php
 require_once (DLEPlugins::Check(ENGINE_DIR . '/modules/helpers.php'));
