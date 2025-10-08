@@ -6398,7 +6398,15 @@ $captionSelectors = [
 ];
 
 foreach ($captionSelectors as $captionSelector) {
-        $captionNode = $xpath->query($captionSelector, $contentNode)->item(0);
+        $captionNode = null;
+
+        if ($contentNode) {
+                $captionNode = $xpath->query($captionSelector, $contentNode)->item(0);
+        }
+
+        if (!$captionNode) {
+                $captionNode = $xpath->query($captionSelector)->item(0);
+        }
 
         if (!$captionNode) {
                 continue;
@@ -6535,7 +6543,23 @@ for ($index = $anchorNodes->length - 1; $index >= 0; $index--) {
         }
 }
 
-$text = trim($dom->saveHTML($contentNode));
+$text = '';
+
+if ($contentNode instanceof DOMElement) {
+        $classAttribute = ' ' . preg_replace('/\s+/u', ' ', $contentNode->getAttribute('class')) . ' ';
+
+        if (strpos($classAttribute, ' news__content ') !== false && strpos($classAttribute, ' xs-mb-25 ') !== false) {
+                for ($child = $contentNode->firstChild; $child; $child = $child->nextSibling) {
+                        $text .= $dom->saveHTML($child);
+                }
+        }
+}
+
+if ($text === '') {
+        $text = $dom->saveHTML($contentNode);
+}
+
+$text = trim($text);
 
 if ($captionText !== '' && stripos($text, 'news__image-caption') === false) {
         $escapedCaption = htmlspecialchars($captionText, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
