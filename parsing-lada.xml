@@ -11,9 +11,8 @@
 	<needplugin></needplugin>
 	<mnotice>0</mnotice>
 	<mysqlinstall><![CDATA[alter table {prefix}_post add url text not null default '';
-alter table {prefix}_post add url_hash char(32) not null default '';
-update {prefix}_post set url_hash = md5(lower(trim(url))) where url != '';
-alter table {prefix}_post add unique key idx_post_url_hash (url_hash);
+alter table {prefix}_post add url_hash char(32) default null;
+update {prefix}_post set url_hash = md5(lower(trim(url))) where url != '' and url_hash is null;
 alter table {prefix}_post add rewrite_done int(4) not null default 0;
 alter table {prefix}_post add rewrite_date int(11) not null default 0;
 alter table {prefix}_post add original_story text not null default '';
@@ -4735,46 +4734,243 @@ if ($action == "list") {
                 fflush($handle);
         }
 
+        function lada_normalize_url_for_hash($url)
+        {
+                $value = trim((string) $url);
+
+                if ($value === '') {
+                        return '';
+                }
+
+                if (function_exists('mb_strtolower')) {
+                        $value = mb_strtolower($value, 'UTF-8');
+                } else {
+                        $value = strtolower($value);
+                }
+
+                return $value;
+        }
+
+        function lada_assign_post_url_hash($postId, $url)
+        {
+                global $db;
+
+                $postId = (int) $postId;
+
+                if ($postId <= 0) {
+                        return null;
+                }
+
+                $table = PREFIX . "_post";
+                $normalizedUrl = lada_normalize_url_for_hash($url);
+
+                if ($normalizedUrl === '') {
+                        $db->query("UPDATE {$table} SET url_hash = NULL WHERE id={$postId}");
+                        return null;
+                }
+
+                $attempt = 0;
+                $hash = null;
+                $conflictId = null;
+
+                while ($attempt < 5) {
+                        if ($attempt === 0) {
+                                $source = $normalizedUrl;
+                        } elseif ($attempt === 1) {
+                                $source = $normalizedUrl . '#id:' . $postId;
+                        } else {
+                                $source = $normalizedUrl . '#id:' . $postId . '#dup:' . $attempt;
+                        }
+
+                        $hash = md5($source);
+                        $safeHash = $db->safesql($hash);
+
+                        $existing = $db->super_query("SELECT id FROM {$table} WHERE url_hash='{$safeHash}' AND id != {$postId} LIMIT 1");
+
+                        if (!$existing || !isset($existing['id'])) {
+                                $db->query("UPDATE {$table} SET url_hash='{$safeHash}' WHERE id={$postId}");
+                                return $hash;
+                        }
+
+                        $conflictId = (int) $existing['id'];
+                        $attempt++;
+                }
+
+                $db->query("UPDATE {$table} SET url_hash = NULL WHERE id={$postId}");
+
+                $context = 'id=' . $postId . ', url=' . $url;
+
+                if ($conflictId) {
+                        $context .= ', conflict_id=' . $conflictId;
+                }
+
+                addLog('❌ Не удалось назначить уникальный url_hash (' . $context . ')');
+
+                return null;
+        }
+
         function ensurePostUrlHashConstraint()
         {
                 static $constraintReady = null;
 
-                if ($constraintReady === true) {
-                        return true;
+                if ($constraintReady !== null) {
+                        return $constraintReady;
                 }
 
                 global $db;
 
                 $table = PREFIX . "_post";
 
+                $summary = [
+                        'total' => 0,
+                        'empty_strings' => 0,
+                        'invalid_values' => 0,
+                        'duplicate_groups' => 0,
+                        'duplicate_rows' => 0,
+                        'empty_normalized' => 0,
+                        'invalid_normalized' => 0,
+                        'duplicates_fixed' => 0,
+                        'duplicates_unresolved' => [],
+                        'index_action' => 'skipped'
+                ];
+
                 $column = $db->super_query("SHOW COLUMNS FROM {$table} LIKE 'url_hash'");
 
                 if (!$column) {
-                        $db->query("ALTER TABLE {$table} ADD COLUMN url_hash CHAR(32) NOT NULL DEFAULT ''");
+                        addLog('ℹ️ Колонка url_hash отсутствует — создаём');
+                        $db->query("ALTER TABLE {$table} ADD COLUMN url_hash CHAR(32) DEFAULT NULL");
+                        $column = $db->super_query("SHOW COLUMNS FROM {$table} LIKE 'url_hash'");
                 }
 
-                $db->query("UPDATE {$table} SET url_hash = MD5(LOWER(TRIM(url))) WHERE url != '' AND url_hash = ''");
+                if ($column && (strtoupper($column['Null']) !== 'YES' || $column['Default'] !== null)) {
+                        addLog('ℹ️ Обновляем колонку url_hash: разрешаем NULL и убираем пустые значения по умолчанию');
+                        $db->query("ALTER TABLE {$table} MODIFY COLUMN url_hash CHAR(32) DEFAULT NULL");
+                        $column = $db->super_query("SHOW COLUMNS FROM {$table} LIKE 'url_hash'");
+                }
 
-                $duplicate = $db->super_query("SELECT url_hash, COUNT(*) AS cnt FROM {$table} WHERE url_hash != '' GROUP BY url_hash HAVING cnt > 1 LIMIT 1");
+                $totalRow = $db->super_query("SELECT COUNT(*) AS cnt FROM {$table}");
+                $summary['total'] = isset($totalRow['cnt']) ? (int) $totalRow['cnt'] : 0;
 
-                if ($duplicate && isset($duplicate['cnt']) && (int)$duplicate['cnt'] > 1) {
-                        addLog('Обнаружены дубликаты url_hash=' . $duplicate['url_hash'] . ' — уникальный индекс не создан');
+                $emptyStringsRow = $db->super_query("SELECT COUNT(*) AS cnt FROM {$table} WHERE url_hash = ''");
+                $summary['empty_strings'] = isset($emptyStringsRow['cnt']) ? (int) $emptyStringsRow['cnt'] : 0;
+
+                $invalidRow = $db->super_query("SELECT COUNT(*) AS cnt FROM {$table} WHERE url_hash IS NOT NULL AND url_hash != '' AND (CHAR_LENGTH(url_hash) != 32 OR url_hash NOT REGEXP '^[0-9A-Fa-f]{32}$')");
+                $summary['invalid_values'] = isset($invalidRow['cnt']) ? (int) $invalidRow['cnt'] : 0;
+
+                $duplicateHashes = [];
+                $duplicateQuery = $db->query("SELECT url_hash, COUNT(*) AS cnt FROM {$table} WHERE url_hash IS NOT NULL AND url_hash != '' GROUP BY url_hash HAVING cnt > 1");
+
+                if ($duplicateQuery) {
+                        while ($dup = $db->get_row($duplicateQuery)) {
+                                $hash = isset($dup['url_hash']) ? $dup['url_hash'] : '';
+                                $cnt = isset($dup['cnt']) ? (int) $dup['cnt'] : 0;
+
+                                if ($hash === '' || $cnt < 2) {
+                                        continue;
+                                }
+
+                                $duplicateHashes[] = [
+                                        'hash' => $hash,
+                                        'count' => $cnt
+                                ];
+
+                                $summary['duplicate_groups']++;
+                                $summary['duplicate_rows'] += $cnt;
+                        }
+                }
+
+                addLog('[URL_HASH_DIAG] total=' . $summary['total'] . ', empty_strings=' . $summary['empty_strings'] . ', invalid=' . $summary['invalid_values'] . ', duplicate_groups=' . $summary['duplicate_groups'] . ', duplicate_rows=' . $summary['duplicate_rows']);
+
+                if ($summary['empty_strings'] > 0) {
+                        $db->query("UPDATE {$table} SET url_hash = NULL WHERE url_hash = ''");
+                        $summary['empty_normalized'] = $summary['empty_strings'];
+                }
+
+                if ($summary['invalid_values'] > 0) {
+                        $db->query("UPDATE {$table} SET url_hash = NULL WHERE url_hash IS NOT NULL AND url_hash != '' AND (CHAR_LENGTH(url_hash) != 32 OR url_hash NOT REGEXP '^[0-9A-Fa-f]{32}$')");
+                        $summary['invalid_normalized'] = $summary['invalid_values'];
+                }
+
+                if (!empty($duplicateHashes)) {
+                        foreach ($duplicateHashes as $info) {
+                                $safeHash = $db->safesql($info['hash']);
+                                $res = $db->query("SELECT id, url FROM {$table} WHERE url_hash='{$safeHash}' ORDER BY id ASC");
+
+                                if (!$res) {
+                                        continue;
+                                }
+
+                                $rows = [];
+
+                                while ($row = $db->get_row($res)) {
+                                        $rows[] = [
+                                                'id' => isset($row['id']) ? (int) $row['id'] : 0,
+                                                'url' => isset($row['url']) ? $row['url'] : ''
+                                        ];
+                                }
+
+                                if (count($rows) < 2) {
+                                        continue;
+                                }
+
+                                foreach ($rows as $row) {
+                                        $db->query("UPDATE {$table} SET url_hash = NULL WHERE id=" . $row['id']);
+                                }
+
+                                $groupFixed = 0;
+
+                                foreach ($rows as $idx => $row) {
+                                        $newHash = lada_assign_post_url_hash($row['id'], $row['url']);
+
+                                        if ($newHash !== null) {
+                                                if ($idx > 0) {
+                                                        $groupFixed++;
+                                                }
+                                        } else {
+                                                $summary['duplicates_unresolved'][] = $row['id'];
+                                        }
+                                }
+
+                                $summary['duplicates_fixed'] += $groupFixed;
+                        }
+                }
+
+                if (!empty($summary['duplicates_unresolved'])) {
+                        addLog('❌ Остались конфликты url_hash у записей: ' . implode(',', $summary['duplicates_unresolved']));
+                }
+
+                $stillDuplicate = $db->super_query("SELECT url_hash FROM {$table} WHERE url_hash IS NOT NULL AND url_hash != '' GROUP BY url_hash HAVING COUNT(*) > 1 LIMIT 1");
+
+                if ($stillDuplicate && isset($stillDuplicate['url_hash'])) {
+                        addLog('❌ Повторяющиеся url_hash не устранены: ' . $stillDuplicate['url_hash']);
+                        addLog('[URL_HASH_SUMMARY] empty_normalized=' . $summary['empty_normalized'] . ', invalid_normalized=' . $summary['invalid_normalized'] . ', duplicates_fixed=' . $summary['duplicates_fixed'] . ', index=' . $summary['index_action']);
+                        $constraintReady = null;
                         return false;
                 }
 
-                $index = $db->super_query("SHOW INDEX FROM {$table} WHERE Key_name = 'idx_url_hash'");
+                $index = $db->super_query("SHOW INDEX FROM {$table} WHERE Key_name IN ('idx_url_hash', 'idx_post_url_hash')");
 
-                if (!$index) {
+                if ($index && isset($index['Key_name'])) {
+                        $summary['index_action'] = 'exists:' . $index['Key_name'];
+                } else {
                         $db->query("ALTER TABLE {$table} ADD UNIQUE KEY idx_url_hash (url_hash)");
-                        $index = $db->super_query("SHOW INDEX FROM {$table} WHERE Key_name = 'idx_url_hash'");
+                        $index = $db->super_query("SHOW INDEX FROM {$table} WHERE Key_name IN ('idx_url_hash', 'idx_post_url_hash')");
+
+                        if ($index && isset($index['Key_name'])) {
+                                $summary['index_action'] = 'created:' . $index['Key_name'];
+                        } else {
+                                addLog('❌ Не удалось создать уникальный индекс по url_hash');
+                                addLog('[URL_HASH_SUMMARY] empty_normalized=' . $summary['empty_normalized'] . ', invalid_normalized=' . $summary['invalid_normalized'] . ', duplicates_fixed=' . $summary['duplicates_fixed'] . ', index=' . $summary['index_action']);
+                                $constraintReady = null;
+                                return false;
+                        }
                 }
 
-                if ($index) {
-                        $constraintReady = true;
-                        return true;
-                }
+                addLog('[URL_HASH_SUMMARY] empty_normalized=' . $summary['empty_normalized'] . ', invalid_normalized=' . $summary['invalid_normalized'] . ', duplicates_fixed=' . $summary['duplicates_fixed'] . ', index=' . $summary['index_action']);
 
-                return false;
+                $constraintReady = true;
+
+                return true;
         }
 
         function doGPT($promt)
@@ -5036,18 +5232,19 @@ if ($action == "list") {
                 $alt_name = str_replace(",", "", $alt_name);
 
                 $url = trim((string)$url);
-                $normalizedUrl = $url;
-                if ($normalizedUrl !== '') {
-                        if (function_exists('mb_strtolower')) {
-                                $normalizedUrl = mb_strtolower($normalizedUrl, 'UTF-8');
-                        } else {
-                                $normalizedUrl = strtolower($normalizedUrl);
+                $normalizedUrl = lada_normalize_url_for_hash($url);
+                $urlHash = $normalizedUrl !== '' ? md5($normalizedUrl) : null;
+                $safeUrl = $db->safesql($url);
+                $safeUrlHash = $urlHash !== null ? $db->safesql($urlHash) : null;
+
+                if ($safeUrlHash !== null) {
+                        $existingHashRow = $db->super_query("SELECT id FROM " . PREFIX . "_post WHERE url_hash='{$safeUrlHash}' LIMIT 0,1");
+
+                        if ($existingHashRow && isset($existingHashRow['id'])) {
+                                $urlHash = null;
+                                $safeUrlHash = null;
                         }
                 }
-
-                $urlHash = $normalizedUrl !== '' ? md5($normalizedUrl) : '';
-                $safeUrl = $db->safesql($url);
-                $safeUrlHash = $db->safesql($urlHash);
 
                 $user_name = "Айгерим";
 
@@ -5070,9 +5267,13 @@ if ($action == "list") {
                         addLog('⚠️ Уникальный индекс по url_hash недоступен — блокировку таблиц пропускаем, проверяем дубликаты через SELECT');
                 }
 
-                if ($urlHash !== '' && $hasUniqueUrlHash) {
+                $is_post = null;
+
+                if ($urlHash !== null && $safeUrlHash !== null) {
                         $is_post = $db->super_query("SELECT id FROM " . PREFIX . "_post WHERE url_hash='{$safeUrlHash}' LIMIT 0,1");
-                } else {
+                }
+
+                if (!$is_post) {
                         $is_post = $db->super_query("SELECT id FROM " . PREFIX . "_post WHERE url='{$safeUrl}' LIMIT 0,1");
                 }
 
@@ -5206,6 +5407,8 @@ if ($action == "list") {
 		
 		$c_date = date( "Y-m-d H:i:s", $c_time);
 		
+                $urlHashSql = $safeUrlHash !== null ? "'{$safeUrlHash}'" : "NULL";
+
                         $sql="INSERT INTO ".PREFIX."_post set
                                                         approve=1,
                                                         category='$category_news',
@@ -5219,14 +5422,14 @@ if ($action == "list") {
                                                         alt_name='$alt_name',
                                                         full_story='$text',
                                                         url ='$safeUrl',
-                                                        url_hash='$safeUrlHash'
+                                                        url_hash=$urlHashSql
                                                 ";
 
                 logStage('ADD_BEFORE_INSERT', [
                         'title' => $title,
                         'alt_name' => $alt_name,
                         'url' => $url,
-                        'url_hash' => $urlHash
+                        'url_hash' => $urlHash !== null ? $urlHash : 'NULL'
                 ]);
 
                 if ($title != "" && trim($text) != "")
@@ -5235,14 +5438,21 @@ if ($action == "list") {
                         $id = $db->insert_id();
 
                         $db->query( "INSERT INTO " . PREFIX . "_post_extras (news_id, allow_rate, votes, disable_index, access, user_id, disable_search, need_pass) VALUES('{$id}', '1', '0', '0', '0', '1', '0', '0')" );
-			$db->query( "INSERT INTO " . PREFIX . "_post_extras_cats (news_id, cat_id) VALUES('{$id}', '$category_news')" );
-			
-			$row = $db->super_query("SELECT * FROM ".PREFIX."_post where ID=".$id);
+                        $db->query( "INSERT INTO " . PREFIX . "_post_extras_cats (news_id, cat_id) VALUES('{$id}', '$category_news')" );
+
+                        $finalUrlHash = lada_assign_post_url_hash($id, $url);
+                        logStage('ADD_URL_HASH_FINALIZED', [
+                                'id' => $id,
+                                'url_hash' => $finalUrlHash !== null ? $finalUrlHash : 'NULL'
+                        ]);
+                        $urlHash = $finalUrlHash;
+
+                        $row = $db->super_query("SELECT * FROM ".PREFIX."_post where ID=".$id);
 			
                         logStage('ADD_SUCCESS', [
                                 'id' => $id,
                                 'alt_name' => $alt_name,
-                                'url_hash' => $urlHash
+                                'url_hash' => $urlHash !== null ? $urlHash : 'NULL'
                         ]);
 
                         $c_url = get_url(  $row['category'] );
